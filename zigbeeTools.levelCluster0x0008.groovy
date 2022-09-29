@@ -5,15 +5,15 @@ library (
         description: "level Control Cluster 0x0008 Tools",
         name: "levelCluster0x0008",
         namespace: "zigbeeTools",
-        documentationLink: "https://github.com/jvmahon/HubitatDriverTools",
+        documentationLink: "https://github.com/jvmahon/Hubitat-Zigbee",
 		version: "0.0.1"
 )
 
 void componentSetLevel(com.hubitat.app.DeviceWrapper cd, level, transitionTime = null) {
 	if (cd.hasCapability("FanControl") ) {
-			setSpeed(level:level, speed:levelToSpeed(level as Integer), ep:getchildEndpointId(cd))
+			setSpeed(level:level, speed:levelToSpeed(level as Integer), ep:getEndpointId(cd))
 		} else { 
-			setLevel(level:level, duration:transitionTime, ep:getchildEndpointId(cd)) 
+			setLevel(level:level, duration:transitionTime, ep:getEndpointId(cd)) 
 		}
 }
 
@@ -44,10 +44,7 @@ void setLevel(Map inputs = [ep: 1 , level: 50 , duration: 0 ]) {
 	cmds += "he cmd 0x${device.deviceNetworkId} 0x${inputs.ep} 0x0008 0x04 {${hexLevel} ${hexRate}}"
 	
     Map thisCommandData = [name:"level", level:hubitatLevel, duration:inputs.duration, hexLevel:hexLevel, hexRate:hexRate, ep:(inputs.ep)]
-if (logEnable) log.debug "Attempting a storage operation"
-	setLastSentCommand(0x0008, 0x04, thisCommandData, "0104", (inputs.ep as Integer))
-if (logEnable) log.debug "Completed the storage operation"
-    log.debug "Sending a hubitat level command ${cmds}"
+	setLastSentCommand(clusterInt:0x0008, commandNum:0x04, commandData:thisCommandData, profileId:"0104", ep:(inputs.ep as Integer))
 	sendHubCommand(new hubitat.device.HubMultiAction(cmds, hubitat.device.Protocol.ZIGBEE)) 
 }
 
@@ -56,7 +53,6 @@ void processAttributes0x0008(Map descMap) {
    	    Integer newLevel
         Integer ep = Integer.parseInt((descMap.endpoint ?: descMap.sourceEndpoint), 16)
 
-    
         if (logEnable) log.debug "processing a 0x0008 cluster response type ${descMap.command}"
 		    List<Map> allAttributes = []
 			if (descMap.attrId != null ) {
@@ -94,8 +90,39 @@ void processAttributes0x0008(Map descMap) {
 						break
 				}
 			}    
-        sendEventsToEndpointByParse(hubEvents, ep)
+        sendEventsToEndpointByParse(events:hubEvents, ep:ep)
 }    
+
+void processSpecificResponse0x0104_0008(Map descMap) {
+    log.warn "For cluster 0x0008, received a specific response message but no specific response handling is implemented"
+}
+
+void processGlobalResponse0x0104_0008(Map descMap) {
+	switch(descMap.command) {
+		case "01": // Read Attributes Response
+		case "0A": // Report Attributes Response
+            processAttributes0x0008(descMap)
+			break
+		case "0B": // Default Response
+            Integer ep = Integer.parseInt((descMap.endpoint ?: descMap.sourceEndpoint), 16)
+            List<Map> hubEvents = []
+            Integer lastCommand = (descMap.data[0] as Integer)
+			Map whatWasSent = removeLastSentCommand(clusterInt:0x0008, commandNum:lastCommand, profileId:"0104", ep:ep)
+            if (logEnable) log.debug "Retrieved a copy of what was sent. Got: ${whatWasSent}"        
+            if (whatWasSent) {
+			    hubEvents << [name:"level", value: (whatWasSent.level), units:"%", descriptionText: "${device.displayName} was set to level ${whatWasSent.level}%", isStateChange:false]
+                sendEventsToEndpointByParse(events:hubEvents, ep:ep)
+            }
+			break
+        case "12": // Discover Commands Received Response
+            Integer ep = Integer.parseInt(descMap.sourceEndpoint, 16)
+            setClusterCommandsSupported(clusterInt:0x0008, profileId:"0104", ep:ep, commandList:(descMap.data.tail() ) ) 
+        	state.deviceData = getDataRecordByNetworkId()
+            break     
+		default:
+			break
+	}
+}
 
 void processClusterResponse0x0104_0008(Map descMap){
     if (descMap.clusterInt  != 0x0008)  return 
@@ -103,48 +130,36 @@ void processClusterResponse0x0104_0008(Map descMap){
 	
 	// Is this the right handler for this message? Should processing be rejected?
 	if (descMap.profileId && (descMap.profileId != "0104")) return 
-
-	// End of rejection reasons!
-	
-	switch(descMap.command) {
-		case "01": // Read Attributes Response
-		case "0A": // Report Attributes Response
-            processAttributes0x0008(descMap)
-			break
-		
-		case "0B": // Default Response
-            Integer ep = Integer.parseInt((descMap.endpoint ?: descMap.sourceEndpoint), 16)
-            List<Map> hubEvents = []
-            Integer lastCommand = (descMap.data[0] as Integer)
-			Map whatWasSent = removeLastSentCommand(0x0008, lastCommand, "0104", ep)
-            if (logEnable) log.debug "Retrieved a copy of what was sent. Got: ${whatWasSent}"
-			hubEvents << [name:"level", value: (whatWasSent.level), units:"%", descriptionText: "${device.displayName} was set to level ${whatWasSent.level}%", isStateChange:false]
-            sendEventsToEndpointByParse(hubEvents, ep)
-			break
-        case "12": // Discover Commands Received Response
-           log.warn "Processing a Command Supported Response frame. Commands supported are ${descMap.data.tail()}. Processing code is not complete. ${descMap}"
-            break        
-		default:
-			break
-	}
-
+    
+    if(descMap.isClusterSpecific == true){ 
+        processSpecificResponse0x0104_0008(descMap) // Cluster Specific Commands
+    } else {
+        processGlobalResponse0x0104_0008(descMap) // Global Commands
+    }
 }	
 
 void configure0x0104_0008() {
 	List cmds = []
 	cmds += "zdo bind 0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0008 {${device.zigbeeId}} {}" 
-    cmds += "he raw   0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0008 {00 00 11 00 10}{0x0104}" // Cluster 0008, Discover Commands Received (command 11) starting at 00 and collecting as many as sixteen (0x10) commands.
+    
+     // Cluster 0008, Discover Commands Received (command 11) starting at 00 and collecting as many as sixteen (0x10) commands. Profile must be specified!
+    cmds += "he raw   0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0008 {00 00 11 00 10}{0x0104}"
 
     if (logEnable) log.debug "Configuring 0x0008 attribute reporting: ${cmds}"
 	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE)) 
 }
-
+void unbind0x0104_0008() {
+	List cmds = []
+	cmds += "zdo unbind 0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0008 {${device.zigbeeId}} {}" 
+	if (logEnable) log.debug "Unbinding 0x0008: ${cmds}"
+	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE))     
+}
 void initialize0x0104_0008() {
 	configure0x0104_0008()
 	refresh0x0104_0008()
 }
 
-void refresh0x0104_0008(Integer ep = 1){
+void refresh0x0104_0008(Integer ep = getEndpointId(device)){
     List cmds = []
 	cmds += zigbee.readAttribute(0x0008, [0x0000, 0x0001, 0x0010, 0x0012, 0x0013], [destEndpoint:ep], 0)
 	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE)) 

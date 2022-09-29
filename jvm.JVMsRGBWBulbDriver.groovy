@@ -5,7 +5,7 @@ import groovy.transform.Field
 #include zigbeeTools.OnOffCluster0x0006
 #include zigbeeTools.levelCluster0x0008
 #include zigbeeTools.ColorCluster0x0300
-#include zigbeeTools.zigbeeBindingsProfile0x0000
+#include zigbeeTools.zigbeeZDOProfile0x0000
 
 metadata {
     definition (name: "JVM's RGBW Bulb Driver", namespace: "jvm", author: "James Mahon") {
@@ -32,60 +32,75 @@ metadata {
         attribute "OffTransitionTime", "number"
         attribute "colorCapabilities", "string"
         
+        command "addNewChildDevice", [[name:"Device Name*", type:"STRING"], 
+                                      [name:"componentDriverName*",type:"ENUM", constraints:(getDriverChoices()) ], 
+                                      [name:"Endpoint*",type:"NUMBER", description:"Endpoint Number, Use 0 for root (parent) device" ] ]
+        command "deleteAllChildDevices"
+        
         // For debugging purposes
-        // command "showStoredData"
+        command "sendString", [[name:"Command*", type:"STRING"] ]
+        command "showStoredData" // For debugging purposes
+        command "unbindAll" // For Debugging Purposes
+        command "getTestData"
+        command "resetDataValues"
+        command "removeEndpointDataEntry"
+        command "getActiveEndpoints"
     }
     preferences {
         input(name:"logEnable", type:"bool", title:"Enable debug logging", defaultValue:false)
         input(name:"txtEnable", type:"bool", title:"Enable descriptionText logging", defaultValue:true)
         input(name:"refreshEnable", type:"bool", title:"Refresh Status on Hubitat Startup", defaultValue:true)
-
     }
+}
+Void getTestData() {
+    log.debug device.properties.data.inspect()
+    log.debug device.properties.inspect()
+    log.debug "Device name is ${device.displayName}"
+    log.debug "Data #1 is: " + device.getDataValue("endpointId")
+    log.debug "Data #2 is: " + device.getDataValue("application")
+        log.debug "Data #3 is: " + device.getDataValue("softwareBuild")
+}
+void resetDataValues(){
+
+    device.updateDataValue("endpointId", "01")
+}
+void removeEndpointDataEntry(){
+        device.properties.remove("endpointId")
+        device.removeDataValue("endpointId")
+
+}
+void sendString(command) {
+    log.debug "Function sendString sending string:\n${command}."
+        List<String> cmds = []
+	cmds += command
+    log.debug cmds
+	sendHubCommand(new hubitat.device.HubMultiAction(cmds, hubitat.device.Protocol.ZIGBEE))
 }
 
 void showStoredData(){
     log.debug getDataRecordByNetworkId().inspect()
 }
 
-//parsers
-
-// This parser handles Hubitat event messages. It operates  like the "parse" routine commonly found in subcomponent drivers
-void parse(List<Map> events) {
-    events.each {
-        if (device.hasAttribute(it.name)) {
-            if (txtEnable && it.descriptionText) log.info it.descriptionText
-            sendEvent(it)
-        }
-    }
+void unbindAll(){
+    if (unbind0x0104_0004) unbind0x0104_0004() // Groups - currently no binding, but call it anyway for consistency
+	if (unbind0x0104_0006) unbind0x0104_0006() // OnOff
+	if (unbind0x0104_0008) unbind0x0104_0008() // Level
+	if (unbind0x0104_0300) unbind0x0104_0300() // Color Control   
 }
 
-/*
+// This parser handles Hubitat event messages (not raw strings from the device). This parser operates  like the "parse" routine commonly found in subcomponent drivers.
 void parse(List<Map> events) {
-    if(logEnable) log.debug "Starting events parser with events ${events}"
-    Map currentAttributeValue
-    events.each {
-        if (device.hasAttribute(it.name)) {
-
-            currentAttributeValue = getHubitatAttributeValue(it.name, (device.getDataValue("endpointChildId") as Integer))
-            
-            if ((currentAttributeValue?.value == it.value) && ( it?.isStateChange == false )) {
-                if (logEnable) log.debug "Attribute Value is unchanged for ${it} which had previous value ${currentAttributeValue} and this is not a stateChange."
-                return
-            }
+    events.findAll{device.hasAttribute(it.name)}?.each {
             if (txtEnable && it.descriptionText) log.info it.descriptionText
             sendEvent(it)
-        }
     }
-        if(logEnable) log.debug "Completed events parser"
 }
-
-*/
-
 
 // This parser handles the Zigbee events.
 void parse(String description) {
     Map descMap = zigbee.parseDescriptionAsMap(description)
-	// Cautin: "OA" response uses "cluster" while "OB" response uses "clusterId. Both use clusterInt, so use that"
+    if (logEnable) log.debug "In main parse routine, received message: ${descMap}"
+    
     if (descMap.profileId == "0000") { //zdo Profile 0x0000.
         processClusterResponse0x0000_xxxx(descMap) // For any of the ZDO clusters
         return
@@ -103,7 +118,6 @@ void parse(String description) {
     }
 }
 
-
 void updated(){
     if (txtEnable) log.info "Processing Preference changes for ${device.displayName}..."
     if (logEnable) {
@@ -117,14 +131,16 @@ void logsOff(){
     device.updateSetting("logEnable",[value:"false",type:"bool"])
 }
 
-List<String> updateFirmware() {
-    if (getDataValue("manufacturer") == "Philips") return zigbee.updateFirmware(manufacturer:0x100B)
-    else return zigbee.updateFirmware()
+void updateFirmware() {
+    List<String> cmds = []
+    cmds += (getDataValue("manufacturer") == "Philips") ? zigbee.updateFirmware(manufacturer:0x100B) : zigbee.updateFirmware()
+	sendHubCommand(new hubitat.device.HubMultiAction(cmds, hubitat.device.Protocol.ZIGBEE))
 }
 
 void configure() {
     if (txtEnable) log.info "Configuring device ${device.displayName}..."
     state.clear()
+    getActiveEndpoints()
 	if (configure0x0104_0004) configure0x0104_0004() // Groups
 	if (configure0x0104_0006) configure0x0104_0006() // OnOff
 	if (configure0x0104_0008) configure0x0104_0008() // Level
@@ -133,16 +149,15 @@ void configure() {
 
 void initialize() {
     if (txtEnable) log.info "Initializing device ${device.displayName}... "
-    state.clear()
-    if ( refreshEnable == false) return
+    if (refreshEnable == false) return
 	if (initialize0x0104_0004) initialize0x0104_0004() // Groups
 	if (initialize0x0104_0006) initialize0x0104_0006() // OnOff
 	if (initialize0x0104_0008) initialize0x0104_0008() // Level
 	if (initialize0x0104_0300) initialize0x0104_0300() // Color Control
 }
 
-void componentRefresh(cd) { refresh(getchildEndpointId(cd)) }
-void refresh(Integer ep = 1) {
+void componentRefresh(cd) { refresh(getEndpointId(cd)) }
+void refresh(Integer ep = getEndpointId(device)) {
     if (txtEnable) log.info "Refreshing device ${device.displayName}..."
 	if (refresh0x0104_0004) refresh0x0104_0004(ep) // Groups
 	if (refresh0x0104_0006) refresh0x0104_0006(ep) // OnOff

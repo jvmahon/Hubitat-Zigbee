@@ -5,16 +5,40 @@ library (
         description: "A set of tools to set up and manage data stored in a global field.",
         name: "globalDataTools",
         namespace: "zigbeeTools",
-        documentationLink: "https://github.com/jvmahon/HubitatDriverTools",
-		version: "0.0.1",
-		dependencies: "none",
-		librarySource:"https://raw.githubusercontent.com/jvmahon/HubitatDriverTools/main/globalDataTools.groovy"
+        documentationLink: "https://github.com/jvmahon/Hubitat-Zigbee",
+		version: "0.0.1"
 )
 
 import java.util.concurrent.* 
 import groovy.transform.Field
 
 @Field static ConcurrentHashMap globalDataStorage = new ConcurrentHashMap(64, 0.75, 1)
+
+/*
+
+globalDataStorage = [:]
+	deviceNetworkId = [:] // The globalDataStorage includes a Map for each device, with deviceNetworkId as key
+		ep = [:] // Each device can then have one or more endpoint maps with endpoint as the key
+			
+			profileId: 0x0104 = [:] // Each Endpont can have one more profiles with profile String as key
+				clusterId = [:] // Each Profile can have one or more clusters, clusterInt as key
+					lastSentCommand =  [:] // Can have multiple last sent commands for each cluster, with command number as key
+						Command#: Map[Map describing command] // each command is represented as a user-defined map
+						Command#: Map[Map describing command]
+					supportedAttributes = [] // to be added - list of attributes for the cluster, attribute #
+					supportedCommandsHex = [] // List of commands supported by the cluster, as Hex strings
+					attributeValues = [:] //  Map of attribute values, attribute # as key, value as String
+
+				clusterId
+				.
+			profileId: 0x0000
+				.
+		ep:0
+		.
+	deviceNetworkId
+	.
+*/
+
 
 ConcurrentHashMap getDataRecordByProductType(){
 
@@ -36,78 +60,112 @@ ConcurrentHashMap getDataRecordByNetworkId() {
 	return globalDataStorage.get(netId, new ConcurrentHashMap(16, 0.75, 1))
 }
 
+List getAllActiveEndpointsHexList() {
+	getDataRecordByNetworkId().get("activeEndpointList")
+}
+
+List setAllActiveEndpointsHexList(List activeEndpoints) {
+	getDataRecordByNetworkId().put("activeEndpointList", activeEndpoints)
+}
+
 ConcurrentHashMap getDataRecordForEndpoint(Map inputs = [ep: null ]) {
 	assert inputs.ep instanceof Integer 
-	getDataRecordByNetworkId().get((inputs.ep), new ConcurrentHashMap(16, 0.75, 1))
+	getDataRecordByNetworkId().get((inputs.ep), new ConcurrentHashMap(4, 0.75, 1))
 }
 
 ConcurrentHashMap getProfileDataRecord(Map inputs = [profileId: null , ep: null ]) {
+	/* Asserts aren't strictly needed since this is only called internal to this library and all the inputs are already checked elsewhere*/
 	assert inputs.profileId instanceof String
 	assert inputs.ep instanceof Integer
 
-	return getDataRecordForEndpoint(ep:inputs.ep)
+	return getDataRecordForEndpoint(ep:(inputs.ep))
             .get("profileInfo", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1) )
                 .get(inputs.profileId, new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1) )
 }
 
 ConcurrentHashMap getClusterDataRecord(Map inputs = [clusterInt: null , profileId: null , ep: null ]) {
 	assert inputs.clusterInt 	instanceof Integer
-	assert inputs.profileId 	instanceof String
-	assert inputs.ep 			instanceof Integer
+	assert inputs.profileId 	instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep 			instanceof Integer // Not strictly needed. Also gets checked elsewhere.
 	
-	return getProfileDataRecord(profileId:(inputs.profileId), ep:(inputs.ep))
+	return getProfileDataRecord(*:inputs)
                     .get("clusterInfo", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
                         .get(inputs.clusterInt, new ConcurrentHashMap<String,ConcurrentHashMap>(16, 0.75, 1))
 }
 
-ConcurrentHashMap getClusterDataRecord(String hexCluster, String profileId, Integer ep) {
-	Integer clusterInt = Integer.parseInt(hexCluster, 16)
-	return getClusterDataRecord(clusterInt:clusterInt, profileId:profileId, ep:ep)
+List getClusterCommandsSupported(Map inputs = [clusterInt: null , profileId: null , ep: null ]){
+	assert inputs.clusterInt instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.profileId instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+
+    return getClusterDataRecord(*:inputs).get("supportedCommandsHex", [])
 }
 
-Object getLastSentCommand(Map inputs = [clusterInt, Integer commandNum, String profileId, Integer ep]){
-	assert inputs.clusterInt instanceof Integer
+List setClusterCommandsSupported(Map inputs = [clusterInt: null , profileId: null , ep: null, commandList: null ]){
+	assert inputs.clusterInt instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.profileId instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+    assert inputs.commandList instanceof List
+
+    return getClusterDataRecord(*:inputs).put("supportedCommandsHex", inputs.commandList)
+}
+
+
+Object getLastSentCommand(Map inputs = [clusterInt: null , commandNum: null , profileId: null , ep: null ]){
+	assert inputs.clusterInt instanceof Integer // Not strictly needed. Also gets checked elsewhere.
 	assert inputs.commandNum instanceof Integer
-	assert inputs.profileId instanceof String
-	assert inputs.ep instanceof Integer
+	assert inputs.profileId instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep instanceof Integer // Not strictly needed. Also gets checked elsewhere.
 	
-	return getClusterDataRecord(custerInt:(inputs.clusterInt), profileId:(inputs.profileId), ep:(inputs.ep)).get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).get(inputs.commandNum)
+	return getClusterDataRecord(*:inputs).get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).get(inputs.commandNum)
 }
 
-Object removeLastSentCommand(Integer clusterInt, Integer commandNum, String profileId, Integer ep){
-	return getClusterDataRecord(clusterInt:clusterInt, profileId:profileId, ep:ep).get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).remove(commandNum)
+Object removeLastSentCommand(Map inputs = [clusterInt: null , commandNum: null , profileId: null , ep: null ]){
+	assert inputs.clusterInt instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.commandNum instanceof Integer
+	assert inputs.profileId instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+
+    return getClusterDataRecord(*:inputs).get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).remove(inputs.commandNum)
 }
 
-Object setLastSentCommand(Integer clusterInt, Integer commandNum, Map commandData, String profileId, Integer ep){
+Object setLastSentCommand (Map inputs = [clusterInt: null , commandNum: null , commandData: null , profileId:  null , ep: null ]){
+
+	assert inputs.clusterInt instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.commandNum instanceof Integer
+	assert inputs.commandData instanceof Map
+	assert inputs.profileId instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep instanceof Integer // Not strictly needed. Also gets checked elsewhere.
+
     if (logEnable) log.debug "For Cluster ${clusterInt}, command ${ commandNum}: Storing ${commandData}"
-	return getClusterDataRecord(clusterInt:clusterInt, profileId:profileId, ep:ep).get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).put(commandNum, commandData)
+	return getClusterDataRecord(*:inputs).get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).put(inputs.commandNum, inputs.commandData)
 }
 
 Object getClusterAttributeValue(Map inputs = [clusterInt: null , attributeInt: null , profileId: null , ep: null ]){
-	assert inputs.clusterInt instanceof Integer
+	assert inputs.clusterInt instanceof Integer // Not strictly needed. Also gets checked elsewhere.
 	assert inputs.attributeInt instanceof Integer
-	assert inputs.profileId instanceof String
-	assert inputs.ep	instanceof Integer
+	assert inputs.profileId instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep	instanceof Integer // Not strictly needed. Also gets checked elsewhere.
 	
-	return getClusterDataRecord(clusterInt:(inputs.clusterInt), profileId:(inputs.profileId), ep:(inputs.ep)).get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).get(inputs.attributeInt)
+	return getClusterDataRecord(*:inputs).get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).get(inputs.attributeInt)
 }
 
 Object setClusterAttributeValue(Map inputs = [clusterInt: null , attributeInt: null , attributeData: null , profileId: null , ep: null ]){
-	assert inputs.clusterInt instanceof Integer
+	assert inputs.clusterInt instanceof Integer // Not strictly needed. Also gets checked elsewhere.
 	assert inputs.attributeInt instanceof Integer
 	assert inputs.attributeData instanceof String
-	assert inputs.profileId instanceof String
-	assert inputs.ep	instanceof Integer
+	assert inputs.profileId instanceof String // Not strictly needed. Also gets checked elsewhere.
+	assert inputs.ep	instanceof Integer // Not strictly needed. Also gets checked elsewhere.
 	
-	return getClusterDataRecord(clusterInt:(inputs.clusterInt), profileId:(inputs.profileId), ep:(inputs.ep)).get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).put(inputs.attributeInt, inputs.attributeData)
+	return getClusterDataRecord(*:inputs).get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).put(inputs.attributeInt, inputs.attributeData)
 }
 /*
 Object getHubitatAttributeValue(String attribute, Integer ep){
     log.debug "getting attribute value for ${attribute}, endpoint ${ep}"
-	return getDataRecordForEndpoint(ep).get("hubitatAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).get(attribute)
+	return getDataRecordForEndpoint(ep:ep).get("hubitatAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).get(attribute)
 }
 Object setHubitatAttributeValue(String attribute, Object attributeData, Integer ep){
-	return getDataRecordForEndpoint(ep).get("hubitatAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).put(attribute, attributeData)
+	return getDataRecordForEndpoint(ep:ep).get("hubitatAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).put(attribute, attributeData)
 }
 */
 

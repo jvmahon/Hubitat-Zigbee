@@ -5,15 +5,15 @@ library (
         description: "Color Cluster 0x0300 Tools",
         name: "ColorCluster0x0300",
         namespace: "zigbeeTools",
-        documentationLink: "https://github.com/jvmahon/HubitatDriverTools",
+        documentationLink: "https://github.com/jvmahon/Hubitat-Zigbee",
 		version: "0.0.1"
 )
 
 void componentSetColor(com.hubitat.app.DeviceWrapper cd, Map colormap) {
-    setColor(colormap, getchildEndpointId(cd))
+    setColor(colormap, getEndpointId(cd))
 }
 
-void setColor(Map colormap, Integer ep = 1){
+void setColor(Map colormap, Integer ep = getEndpointId(device)){
     Integer targetHue = Math.max(Math.min(colormap.hue as Integer, 100), 0)
  	Integer targetSat = Math.max(Math.min(colormap.saturation as Integer, 100), 0)
     
@@ -25,34 +25,34 @@ void setColor(Map colormap, Integer ep = 1){
 
 	cmds += "he cmd 0x${device.deviceNetworkId} 0x${ep} 0x0300 0x06 {${hexHue}${hexSat} 0000}}"
 	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE)) 
-    setLastSentCommand(0x0300, 0x06, [hue:targetHue, hexHue: hexHue, saturation:targetSat, hexSat: hexSat, level:(colormap.level as Integer), command:0x06], "0104", ep)
+    setLastSentCommand(clusterInt:0x0300, commandNum:0x06, commandData:[hue:targetHue, hexHue: hexHue, saturation:targetSat, hexSat: hexSat, level:(colormap.level as Integer), command:0x06], profileId:"0104", ep:ep)
     
 }
 
 void componentSetHue(com.hubitat.app.DeviceWrapper cd, hue) {
-    setHue(hue, getchildEndpointId(cd))
+    setHue(hue, getEndpointId(cd))
 }
-void setHue(hue, Integer ep = 1){
+void setHue(hue, Integer ep = getEndpointId(device)){
 	Integer targetHue = Math.max(Math.min(hue as Integer, 100), 0)
 	String hexHue = zigbee.convertToHexString(Math.round(targetHue * 254 / 100) as Integer,2)
     
     List cmds = []
 	cmds += "he cmd 0x${device.deviceNetworkId} 0x${ep} 0x0300 0x00 {${hexHue}000000 }}"
 	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE)) 
-    setLastSentCommand(0x0300, 0x00, [hue:targetHue, hexHue: hexHue, command:0x00], "0104", ep)
+    setLastSentCommand(clusterInt:0x0300, commandNum:0x00, commandData:[hue:targetHue, hexHue: hexHue, command:0x00], profileId:"0104", ep:ep)
 }
 
 void componentSetSaturation(com.hubitat.app.DeviceWrapper cd, saturation) {
-    setSaturation(saturation, getchildEndpointId(cd))
+    setSaturation(saturation, getEndpointId(cd))
 }
-void setSaturation(saturation, Integer ep = 1){
+void setSaturation(saturation, Integer ep = getEndpointId(device)){
 	Integer targetSat = Math.max(Math.min(saturation as Integer, 100), 0)
 	String hexSat = zigbee.convertToHexString(Math.round(targetSat * 254 / 100) as Integer,2)
     
     List cmds = []   
 	cmds += "he cmd 0x${device.deviceNetworkId} 0x${ep} 0x0300 0x03 {${hexSat}000000}}"
 	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE)) 
-    setLastSentCommand(0x0300, 0x03, [saturation:targetSat, hexSat: hexSat, command:0x03], "0104", ep)
+    setLastSentCommand(clusterInt:0x0300, commandNum:0x03, commandData:[saturation:targetSat, hexSat: hexSat, command:0x03], profileId:"0104", ep:ep)
 }
 
 void processAttributes0x0300(Map descMap){
@@ -105,22 +105,15 @@ void processAttributes0x0300(Map descMap){
                         break
                 }
             }
-    sendEventsToEndpointByParse(hubEvents, ep)
+    sendEventsToEndpointByParse(events:hubEvents, ep:ep)
 }
 
-void processClusterResponse0x0104_0300(Map descMap){
-    if (descMap.clusterInt  != 0x0300)  return 
-    assert ! (descMap.endpoint.is(null) && descMap.destinationEndpoint.is( null ))
-	
-	// Is this the right handler for this message? Should processing be rejected?
-	// Should processing be rejected?
-	if (descMap.profileId && (descMap.profileId != "0104")) return 
+void processSpecificResponse0x0104_0300(Map descMap) {
+    log.warn "For cluster 0x0300, received a specific response message but no specific response handling is implemented"
 
-	// End of rejection reasons!	
-	
-	if (logEnable) log.debug "processing a 0x0300 cluster response message ${descMap}"
-	
-	switch(descMap.command) {
+}
+void processGlobalResponse0x0104_0300(Map descMap) {
+    	switch(descMap.command) {
 		case "01": // Read Attributes Response
 		case "0A": // Report Attributes Response
             processAttributes0x0300(descMap)
@@ -129,8 +122,9 @@ void processClusterResponse0x0104_0300(Map descMap){
 		case "0B": // Default Response
             Integer ep = Integer.parseInt((descMap.endpoint ?: descMap.sourceEndpoint), 16)
             List<Map> hubEvents = []
-			Map whatWasSent = removeLastSentCommand(0x0300, (descMap.data[0] as Integer), (descMap.profileId), ep )
-            if (logEnable) log.debug "Last Sent Color Command for command ${ (descMap.data[0] as Integer)} endpoint ${ep} was: ${whatWasSent}"
+			Map whatWasSent = removeLastSentCommand(clusterInt:0x0300, commandNum:(Integer.parseInt(descMap.data[0], 16)), profileId:(descMap.profileId), ep:ep )
+           
+            if (logEnable) log.debug "Last Sent Color Command for command 0x${ (descMap.data[0])} endpoint ${ep} was: ${whatWasSent}"
       
             if (whatWasSent?.hue != null) {
                 hubEvents << [name:"hue", value: (whatWasSent.hue), units:"%", descriptionText: "${device.displayName} was set to hue ${(whatWasSent.hue)}%", isStateChange:false]
@@ -139,15 +133,30 @@ void processClusterResponse0x0104_0300(Map descMap){
             if (whatWasSent?.saturation != null)	 {
                 hubEvents << [name:"saturation", value: (whatWasSent.saturation), units:"%", descriptionText: "${device.displayName} was set to Saturation ${(whatWasSent.saturation)}%", isStateChange:false]
             }
-            sendEventsToEndpointByParse(hubEvents, ep)
+            sendEventsToEndpointByParse(events:hubEvents, ep:ep)
 			break
         case "12": // Discover Commands Received Response
-           log.warn "Processing a Command Supported Response frame. Commands supported are ${descMap.data.tail()}. Processing code is not complete. ${descMap}"
-            brea        
+            Integer ep = Integer.parseInt(descMap.sourceEndpoint, 16)
+            setClusterCommandsSupported(clusterInt:0x0300, profileId:"0104", ep:ep, commandList:(descMap.data.tail() ) ) 
+	        state.deviceData = getDataRecordByNetworkId()
+            break      
 		default:
 			break
 	}
+}
+void processClusterResponse0x0104_0300(Map descMap){
+    if (descMap.clusterInt  != 0x0300)  return 
+    assert ! (descMap.endpoint.is(null) && descMap.destinationEndpoint.is( null ))
+	
+	if (descMap.profileId && (descMap.profileId != "0104")) return 
 
+    if (logEnable) log.debug "processing a 0x0300 cluster response message ${descMap}"
+    
+    if(descMap.isClusterSpecific == true){ 
+        processSpecificResponse0x0104_0300(descMap) // Cluster Specific Commands
+    } else {
+        processGlobalResponse0x0104_0300(descMap) // Global Commands
+    }
 }
 
 
@@ -155,16 +164,24 @@ void processClusterResponse0x0104_0300(Map descMap){
 void configure0x0104_0300() {
 	List cmds = []
 	cmds += "zdo bind 0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0300 {${device.zigbeeId}} {}" 
-    cmds += "he raw   0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0300 {00 00 11 00 10}{0x0104}" // Cluster 0300, Discover Commands Received (command 11) starting at 00 and collecting as many as sixteen (0x10) commands.
+    
+    // Cluster 0300, Discover Commands Received (command 11) starting at 00 and collecting as many as sixteen (0x10) commands. Profile must be specified.   
+    cmds += "he raw   0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0300 {00 00 11 00 10}{0x0104}" 
 
 	if (logEnable) log.debug "Configuring 0x0300 attribute reporting: ${cmds}"
 	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE)) 
+}
+void unbind0x0104_0300() {
+	List cmds = []
+	cmds += "zdo unbind 0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0300 {${device.zigbeeId}} {}" 
+	if (logEnable) log.debug "Unbinding 0x0300: ${cmds}"
+	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE))     
 }
 void initialize0x0104_0300() {
 	configure0x0104_0300()
 	refresh0x0104_0300()
 }
-void refresh0x0104_0300(Integer ep = 1) {
+void refresh0x0104_0300(Integer ep = getEndpointId(device)) {
     List cmds = []
     cmds += zigbee.readAttribute(0x0300, [0x400a], [destEndpoint:ep], 0) // Want the Color Capabilities response before anything else, so read that first!
 	cmds += zigbee.readAttribute(0x0300, [0x0000, 0x0001, 0x0007, 0x0008], [destEndpoint:ep], 0)
