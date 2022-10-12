@@ -9,30 +9,32 @@ library (
 		version: "0.0.1"
 )
 
-List<String> getGroupData(Integer ep = getEndpointId(device)){
-	List<String> groups = getClusterDataRecord(clusterInt:0x0004, profileId:"0104", ep:ep).get("groups", [])
+List<String> getGroupData(Map params = [:]){
+	Map inputs = [ep: null ] << params
+	List<String> groups = getDataRecordForEndpoint(*:inputs)
+							.get("groups", [])
     if (logEnable) log.debug "Returning groups record with contents ${groups}"
     return groups
 }
-void clearGroupData(Integer ep = getEndpointId(device)){
-	List<String> groups = getClusterDataRecord(clusterInt:0x0004, profileId:"0104", ep:ep).remove("groups")
+
+void clearGroupData(Map params = [:]){
+	Map inputs = [ep: null ] << params
+	List<String> groups = getDataRecordForEndpoint(*:inputs).remove("groups")
 }
 
 void processSpecificResponse0x0104_0004(Map descMap) {
-	Integer ep = Integer.parseInt(descMap.sourceEndpoint, 16)
-    
-	if (logEnable) log.debug "Group Cluster 0x0004 library processing message: ${descMap}"
-
+    String ep = descMap.sourceEndpoint ?: descMap.endpoint
+  
     String status = descMap.data[0]
 
     switch (descMap.command){
         case "00" : //add group response
-            if (status in ["00","8A"]) {
+            if (status in ["00","8A"]) { // Status enumerations are in ZCL Table 2.6.3
                 group = descMap.data[1] + descMap.data[2]
-                if (group in getGroupData(ep)) {
+                if (group in getGroupData(ep:ep)) {
                     if (txtEnable) log.info "group membership refreshed"
                 } else {
-                    getGroupData(ep).add(group)
+                    getGroupData(ep:ep).add(group)
                     if (txtEnable) log.info "group membership added"
                 }
             } else {
@@ -44,13 +46,13 @@ void processSpecificResponse0x0104_0004(Map descMap) {
 			break
         case "02" : //group membership response
             Integer groupCount = hexStrToUnsignedInt(descMap.data[1])
-            if (groupCount == 0 && getGroupData(ep) != []) {
+            if (groupCount == 0 && getGroupData(ep:ep) != []) {
                 List<String> cmds = []
-				getGroupData(ep).each {
-                    cmds.addAll(zigbee.command(0x0004,0x00,[[destEndpoint:(inputs.ep)]],0,"${it} 00")) // Add Group Command for gorup ${it} with "00" as name
+				getGroupData(ep:ep).each {
+                    cmds.addAll(zigbee.command(0x0004,0x00,[[destEndpoint:ep]],0,"${it} 00")) // Add Group Command for group ${it} with "00" as name
                     if (txtEnable) log.warn "update group:${it} on device"
                 }
-				clearGroupData(ep)
+				clearGroupData(ep:ep)
                 sendHubCommand(new hubitat.device.HubMultiAction(cmds, hubitat.device.Protocol.ZIGBEE))
             } else {
                 //get groups and update groupData...
@@ -59,8 +61,8 @@ void processSpecificResponse0x0104_0004(Map descMap) {
                     crntByte = (i * 2) + 2
                     group = descMap.data[crntByte] + descMap.data[crntByte + 1]
 
-					if ( !(group in getGroupData(ep)) ) {
-						getGroupData(ep).add(group)
+					if ( !(group in getGroupData(ep:ep)) ) {
+						getGroupData(ep:ep).add(group)
                         if (txtEnable) log.info "group added to global data storage list"
                     } else {
                         if (txtEnable) log.debug "group already exists in global data storage list..."
@@ -70,31 +72,24 @@ void processSpecificResponse0x0104_0004(Map descMap) {
             break
         case "03" : //remove group response
             group = descMap.data[1] + descMap.data[2]
-			getGroupData(ep).remove(group)
+			getGroupData(ep:ep).remove(group)
             if (txtEnable) log.info "group membership removed"
             break
         default :
             log.error "group command not handled:${descMap}"
     }
-    if (getGroupData(ep)) {
+    if (getGroupData(ep:ep)) {
 	    if (state.deviceData.is( null ) ) state.deviceData = [:]
 	    state.deviceData = getDataRecordByNetworkId()
     }
 }
 
 void processGlobalResponse0x0104_0004(Map descMap) {
-    switch (descMap.command){
-        case "12":
-            Integer ep = Integer.parseInt(descMap.sourceEndpoint, 16)
-            setClusterCommandsSupported(clusterInt:0x0004, profileId:"0104", ep:ep, commandList:(descMap.data.tail() ) ) 
-        	state.deviceData = getDataRecordByNetworkId()
-            break
-    }
+        assert ! (descMap.sourceEndpoint.is( null )   && descMap.endpoint.is (null)  )
+        String ep = descMap.sourceEndpoint ?: descMap.endpoint
 }
 
 void processClusterResponse0x0104_0004(Map descMap) {
-	// Should processing be rejected?
-	if (descMap.profileId && (descMap.profileId != "0104")) return 
     if (descMap.clusterInt  != 0x0004)  return 
     
     if(descMap.isClusterSpecific == true){ 
@@ -104,33 +99,42 @@ void processClusterResponse0x0104_0004(Map descMap) {
     }
 }
 
-void getGroupMembership(Map inputs = [ep: null ] ) {
-    assert inputs.ep instanceof Integer 
-	List cmds = []
-	cmds += zigbee.command(0x0004,0x02,[destEndpoint:(inputs.ep)],0,"00") // Get Group Membership Request. "00" payload means to get all groups!
-    sendHubCommand(new hubitat.device.HubMultiAction(cmds, hubitat.device.Protocol.ZIGBEE))
+void getGroups(Map params = [:]) {
+	Map inputs = [ep: "01" ] << params
+	
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+    getGroupMembership(*:inputs)
+}
+void getGroupMembership(Map params = [:] ) {
+    Map inputs = [ep: null ] << params
+
+	if (logEnable) log.debug "Getting group membership with inputs: ${inputs}"
+	sendZCLAdvanced(
+			destinationEndpoint: (inputs.ep) ,
+			clusterId: "0004" ,
+			isClusterSpecific: true ,
+			commandId: 0x02,             // Get Group membership command, ZCL 3.6.2.3.4, ZCL Table 3-37
+			commandPayload: "00",     // Value of 00 gets all groups in whcih the device is a member. ZCL 3.6.2.3.4.1
+		)
 }
 
-void configure0x0104_0004(Integer ep = getEndpointId(device)) {
+void configure0x0104_0004(String ep = device.endpointId) {
     getGroupMembership(ep:ep)
-    List cmds = []
-    // Cluster 0004, Discover Commands Received (command 11) starting at 00 and collecting as many as sixteen (0x10) commands. Profile must be specified.
-    cmds += "he raw   0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0004 {00 00 11 00 10}{0x0104}" 
+}
+void unbind0x0104_0004(String ep = device.endpointId) {
+	String cmd = "zdo unbind 0x${device.deviceNetworkId} 0x${ep} 0x01 0x0004 {${device.zigbeeId}} {}" 
+	if (logEnable) log.debug "Unbinding 0x0004: ${cmd}"
+	sendHubCommand(new hubitat.device.HubAction( cmd, hubitat.device.Protocol.ZIGBEE))     
+}
+void initialize0x0104_0004(String ep = device.endpointId) {
+	configure0x0104_0004(ep)
+    log.warn "configure functions have a timing issue saving to state. Unlikely to have completed the data gathering by the time it saves!"
+    state.deviceStaticData = getDataRecordByNetworkId(isDynamicData: false )
+	state.deviceDynamicData  = getDataRecordByNetworkId(isDynamicData: true )
+}
+void refresh0x0104_0004(String ep = device.endpointId) {
 
-    sendHubCommand(new hubitat.device.HubMultiAction(cmds, hubitat.device.Protocol.ZIGBEE))
-
-}
-void unbind0x0104_0004() {
-	List cmds = []
-	cmds += "zdo unbind 0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0004 {${device.zigbeeId}} {}" 
-	if (logEnable) log.debug "Unbinding 0x0004: ${cmds}"
-	sendHubCommand(new hubitat.device.HubMultiAction( cmds, hubitat.device.Protocol.ZIGBEE))     
-}
-void initialize0x0104_0004() {
-	configure0x0104_0004()
-    	    state.deviceData = getDataRecordByNetworkId()
-}
-void refresh0x0104_0004(Integer ep = getEndpointId(device)) {
+	// Does nothing so far! Maybe it should refresh group membership by calling to configure0x0104_0004()?
 }
 
 

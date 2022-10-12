@@ -9,30 +9,29 @@ library (
 		version: "0.0.1"
 )
 
-Integer getEndpointId(com.hubitat.app.DeviceWrapper cd) {
-    log.debug "Endpoint name is ${cd.displayName}"
-    log.debug "EndpointId #1 is: " + cd.endpointId
-    log.debug "EndpointId #2 is: " + cd.getDataValue("endpointId")
-    log.debug "EndpointId #3 is: " + cd.getDataValue("application")
-    return  (cd.getDataValue("endpointId") as Integer) ?: 01
+String getEndpointId(com.hubitat.app.DeviceWrapper cd) {
+	log.warn "getEndpointId - need to reconfirm endpoint processing"
+	return cd.endpointId
+    //return cd.getDataValue("endpointId") ?: cd.endpointId
 }
-Integer getChildSubindex(com.hubitat.app.DeviceWrapper cd) {
-    return cd.getDataValue("endpointChildId") as Integer
+String getChildSubindex(com.hubitat.app.DeviceWrapper cd) {
+	return cd.endpointIndexId
+    // return cd.getDataValue("endpointIndexId") as Integer
 }
 
 // Get List (possibly multiple) child device for a specific endpoint. Child devices can also be of the form '-ep000' 
 // Child devices associated with the root device end in -ep000
 List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint(Map inputs = [ep: null ] ) {
-	assert inputs.ep instanceof Integer
-	childDevices.findAll{ ( getEndpointId(it)  == (inputs.ep) )}
+	assert inputs.ep instanceof String
+	childDevices.findAll{ ( it.endpointId == (inputs.ep) )}
 }
 
 void sendEventsToEndpointByParse(Map inputs = [ events: null , ep: null ]) {
 	assert inputs.events instanceof List
-	assert inputs.ep instanceof Integer
+	assert inputs.ep instanceof String
 
 	List<com.hubitat.app.DeviceWrapper> targetDevices = getChildDeviceListByEndpoint(ep:(inputs.ep))
-	if (inputs.ep == 1)  { targetDevices += this }
+	if (inputs.ep == device.endpointId)  { targetDevices += this }
 	// events.each{ setHubitatAttributeValue(it.name, it, ep) }
 	targetDevices.each { it.parse(inputs.events) }
 }
@@ -78,12 +77,12 @@ void createChildDevices() { // This function is not currently used!
 		}
 	}
 }
-//
+/*
 		command "addNewChildDevice", [[name:"Device Name*", type:"STRING"], 
                                       [name:"componentDriverName*",type:"ENUM", constraints:(getDriverChoices()) ], 
                                       [name:"Endpoint*",type:"NUMBER", description:"Endpoint Number, Use 0 for root (parent) device" ] ]
 
-//
+*/
 
 List getDriverChoices() {
 	// Returns the name of the generic component drivers with their namespace listed in parenthesis
