@@ -6,7 +6,7 @@ library (
         name: "globalDataTools",
         namespace: "zigbeeTools",
         documentationLink: "https://github.com/jvmahon/Hubitat-Zigbee",
-		version: "0.0.1"
+		version: "0.5.0"
 )
 
 import java.util.concurrent.* 
@@ -22,9 +22,9 @@ globalDataStorage = [:]
 		activeEndpointList = [] // List of Active Endpoints in Hex form. Endpoint "00" = ZDO is never on the list.
 		ep = [:] // Each device can then have one or more endpoint maps with endpoint as the key
 			
-			profileIdHex: 0x0104 // Each Endpoint can have one more profiles with profile String as key
-			inClustersHex: [] // List of inclusters for the endpoint
-			outClustersHex: [] // List of outclusters for the endpoint
+			profileId: 0x0104 // Each Endpoint can have one more profiles with profile String as key
+			inClusters: [] // List of inclusters for the endpoint
+			outClusters: [] // List of outclusters for the endpoint
 			groups: = [] // List of groups that the endpoint is a member of. In Hex form.
 			clusterInfo = [] // Information about each individual cluster.
 					clusterId = [:] // Each Endpoint can have one or more clusters, cluster Hex value as key
@@ -47,13 +47,39 @@ globalDataStorage = [:]
 	.
 */
 
+// Recursively recreate ConcurrentHashMap structure where every sub-Map in the original data is recreated as a ConcurrentHashMap
+// When passed a map, this will return a concurrentHashMap where, if the value for a key in the original map was itselve a Map item, that value gets recreated as a ConcurrentHashMap.
+// Primary use: If a device has already gathered all its relevant static data at it is stored in state, can recreate that from the stored state
+ConcurrentHashMap recreateConcurrentMapStructure(Map data) {
+    // log.debug "called recreateMapValue with data ${data.inspect()}"
+    ConcurrentHashMap rValue = new ConcurrentHashMap()
+    data.each {
+        if (it.value instanceof ConcurrentHashMap) {
+            log.debug "Entry ${it.key} was already a concurrentHashMap! ${it.inspect()}"
+            rValue.put(it.key, it.value)
+        } else if (it.value instanceof Map) {
+            rValue.put(it.key, recreateConcurrentMapStructure(it.value) )
+        } else {
+            // Any non-map gets inserted into the result without further recursion
+            // If the non-map was a List or other type that included embedded maps, those embedded maps are not converted into ConcurrentHashMaps
+            rValue.put(it.key, it.value)
+        }
+    }
+    return rValue
+}
+
+void reloadStoredStaticData() {
+    getDataRecordByNetworkId().putAll( recreateConcurrentMapStructure(state.deviceStaticData) )
+}
+
+// This function isn't currently used. It would allow storing data "common" to multiple devices once!
 ConcurrentHashMap getDataRecordByProductType(Map params = [:]) {
 	Map inputs = [ isDynamicData: false ] << params
 	
 	assert inputs.isDynamicData instanceof Boolean
 
-	String manufacturer = 	hubitat.helper.HexUtils.integerToHexString( device.getDataValue("manufacturer").toInteger(), 2)
-	String model = 	hubitat.helper.HexUtils.integerToHexString( device.getDataValue("model").toInteger(), 2)
+	String manufacturer = 	device.getDataValue("manufacturer")
+	String model = 			device.getDataValue("model")
 	String productKey = "${manufacturer}:${model}"
 	
 	if (inputs.isDynamicData) {
@@ -64,15 +90,16 @@ ConcurrentHashMap getDataRecordByProductType(Map params = [:]) {
 }
 
 void logDataRecordByProductType(){
-    log.debug getDataRecordByProductType()
+    log.debug getDataRecordByProductType(isDynamicData: false)
 }
 
 ConcurrentHashMap getDataRecordByNetworkId(Map params = [:]) {
 	Map inputs = [ isDynamicData: false ] << params
-	
+
 	assert inputs.isDynamicData instanceof Boolean
-	
-    String netId = device.getDeviceNetworkId()
+
+    String netId = device?.getDeviceNetworkId()
+    if (netId.is( null ) ) return null
 	if (inputs.isDynamicData) {
 		return globalDynamicDataStorage.get(netId, new ConcurrentHashMap(16, 0.75, 1))
 	} else {
@@ -81,211 +108,208 @@ ConcurrentHashMap getDataRecordByNetworkId(Map params = [:]) {
 }
 
 List<String> getAllActiveEndpointsHexList() {
-	getDataRecordByNetworkId().get("activeEndpointList", [])
+	List rValue = getDataRecordByNetworkId(isDynamicData: false )?.get("activeEndpointList", [])
+    log.debug "Returning endpoints: ${rValue}"
+    return rValue
 }
 
 List<String> setAllActiveEndpointsHexList(List<String> activeEndpoints) {
-	getDataRecordByNetworkId().put("activeEndpointList", activeEndpoints)
+	List rValue =getDataRecordByNetworkId(isDynamicData: false ).put("activeEndpointList", activeEndpoints)
+	state.deviceStaticData = getDataRecordByNetworkId(isDynamicData: false )
+	// state.deviceDynamicData  = getDataRecordByNetworkId(isDynamicData: true )	
+	return rValue
 }
 
 ConcurrentHashMap getDataRecordForEndpoint(Map params = [:]) {
-	Map inputs = [ep: null ] << params
+	Map inputs = [ep: getEndpointId(device) , isDynamicData: false  ] << params
+	if (inputs.ep instanceof Integer) { inputs.ep = zigbee.convertToHexString(inputs.ep, 2) } 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
 	
-    assert ! inputs.ep.is( null )
-	
-	if (inputs.ep instanceof Integer) {
-		String epHex = zigbee.convertToHexString(inputs.ep, 2)
-		getDataRecordByNetworkId().get(epHex, new ConcurrentHashMap(4, 0.75, 1))
-	} else if (inputs.ep instanceof String || inputs.ep instanceof GString) {
-		assert inputs.ep.length() == 2
-		getDataRecordByNetworkId().get((inputs.ep as String), new ConcurrentHashMap(4, 0.75, 1))
-	}
+    return getDataRecordByNetworkId(*:inputs)
+				.get(inputs.ep, new ConcurrentHashMap(4, 0.75, 1))
 }
 
 ConcurrentHashMap getClusterDataRecord(Map params = [:]) {
-	Map inputs = [clusterId: null , ep: null ] << params
-	
-	try {
-		assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.ep instanceof String || inputs.ep instanceof GString // Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
-	
-	return getDataRecordForEndpoint(ep: inputs.ep)
+	Map inputs = [clusterId: null , ep: null , isDynamicData: false ] << params
+
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+
+	return getDataRecordForEndpoint(*:inputs)
 			.get("clusterInfo", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
 				.get(inputs.clusterId, new ConcurrentHashMap<String,ConcurrentHashMap>(16, 0.75, 1))
 }
 
 List getClusterCommandsSupported(Map params = [:]){
-	Map inputs = [ep: null , clusterId: null ] << params
-	
-	try { 
-		assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.ep instanceof String || inputs.ep instanceof GString // Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+	Map inputs = [ep: null , clusterId: null , isDynamicData: false  ] << params
+
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
 
     return getClusterDataRecord(*:inputs)
 			.get("clusterSpecificCommandsHex", [])
 }
 
 List setClusterCommandsSupported(Map params = [:]) {
-	Map inputs = [clusterId: null , ep: null , commandList: null ] << params
-	
-	try {
-		assert inputs.clusterId instanceof String  || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.ep instanceof String || inputs.ep instanceof GString  // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.commandList instanceof List
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+	Map inputs = [clusterId: null , ep: null , commandList: null , isDynamicData: false  ] << params
+
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+	assert inputs.commandList instanceof List
+
 	if (inputs.commandList.size() < 1) return
-    return getClusterDataRecord(*:inputs)
-			.put("clusterSpecificCommandsHex", inputs.commandList)
+    List rValue = getClusterDataRecord(*:inputs)
+					.put("clusterSpecificCommandsHex", inputs.commandList)
+    state.deviceStaticData = getDataRecordByNetworkId(isDynamicData: false )
+	// state.deviceDynamicData  = getDataRecordByNetworkId(isDynamicData: true )						
+	return rValue
 }
 
-Map getClusterAttributesSupported(Map params = [:]){
-	Map inputs = [ep: null , clusterId: null ] << params
-	
-	try { 
-		assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.ep instanceof String || inputs.ep instanceof GString // Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+ConcurrentHashMap getClusterAttributesSupported(Map params = [:]){
+	Map inputs = [ep: null , clusterId: null , isDynamicData: false  ] << params
+
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
 
     return getClusterDataRecord(*:inputs)
 			.get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(16, 0.75, 1))
 }
 
-List setClusterAttributesSupported(Map params = [:]) {
-	Map inputs = [clusterId: null , ep: null , attributesMap: null ] << params
-	
-	try {
-		assert inputs.clusterId instanceof String  || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.ep instanceof String || inputs.ep instanceof GString  // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.attributesMap instanceof Map
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+ConcurrentHashMap setClusterAttributesSupported(Map params = [:]) {
+	Map inputs = [clusterId: null , ep: null , attributesMap: null , isDynamicData: false  ] << params
+
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+	assert inputs.attributesMap instanceof Map
+
 	if (inputs.attributesMap.size() < 1) return
-    return getClusterAttributesSupported(*:inputs)
-			.putAll(inputs.attributesMap)
+    ConcurrentHashMap rValue = getClusterAttributesSupported(*:inputs)
+								.putAll(inputs.attributesMap)
+    state.deviceStaticData = getDataRecordByNetworkId(isDynamicData: false )
+	// state.deviceDynamicData  = getDataRecordByNetworkId(isDynamicData: true )									
+	return rValue
 }
 
-
-Object getLastSentCommand(Map params = [:] ){
-	Map inputs = [clusterId: null , commandNum: null , ep: null, isDynamicData: true  ] << params
+String getClusterAttributeDataType(Map params = [:]) {
+	Map inputs = [clusterId: null , ep: getEndpointId(device) , attributeId: null , isDynamicData: false  ] << params
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2	
+	assert inputs.attributeId instanceof String || inputs.attributeId instanceof GString
+	assert inputs.attributeId.length() == 4
 	
-	try {
-		assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.commandNum instanceof Integer
-		assert inputs.ep instanceof String || inputs.ep instanceof GString // Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+	return getClusterAttributesSupported(*:inputs).get(inputs.attributeId)
+}
+
+ConcurrentHashMap getLastSentCommand(Map params = [:] ){
+	Map inputs = [clusterId: null , commandId: null , ep: null, isDynamicData: true  ] << params
+
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+	if (inputs.commandId instanceof Integer) inputs.commandId = zigbee.convertToHexString(inputs.commandId,2)
+	assert inputs.commandId instanceof String || inputs.commandId instanceof GString
+	assert inputs.commandId.length() == 2
 	
 	return getClusterDataRecord(*:inputs)
 			.get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
-				.get(inputs.commandNum)
+				.get(inputs.commandId)
 }
 
-Object removeLastSentCommand(Map params = [:] ){
-	Map inputs = [clusterId: null , commandNum: null , ep: null, isDynamicData: true ] << params
-	
-	try {
-		assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.commandNum instanceof Integer
-		assert inputs.ep instanceof String || inputs.ep instanceof GString // Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+ConcurrentHashMap removeLastSentCommand(Map params = [:] ){
+	Map inputs = [clusterId: null , commandId: null , ep: null, isDynamicData: true ] << params
 
-    return getClusterDataRecord(*:inputs)
-			.get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
-				.remove(inputs.commandNum)
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+	if (inputs.commandId instanceof Integer) inputs.commandId = zigbee.convertToHexString(inputs.commandId,2)
+	assert inputs.commandId instanceof String || inputs.commandId instanceof GString
+	assert inputs.commandId.length() == 2
+
+    ConcurrentHashMap rValue = getClusterDataRecord(*:inputs)
+								.get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
+									.remove(inputs.commandId)
+    // state.deviceStaticData = getDataRecordByNetworkId(isDynamicData: false )
+	state.deviceDynamicData  = getDataRecordByNetworkId(isDynamicData: true )										
+	return rValue // Returns the value associted with the removed key
 }
 
-Object setLastSentCommand (Map params = [:] ){
-	Map inputs = [clusterId: null , commandNum: null , commandData: null , ep: null, isDynamicData: true ] << params
+ConcurrentHashMap setLastSentCommand (Map params = [:] ){
+	Map inputs = [clusterId: null , commandId: null , commandData: null , ep: null, isDynamicData: true ] << params
 
-	try {
-		assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.commandNum instanceof Integer
-		assert inputs.commandData instanceof Map
-		assert inputs.ep instanceof String || inputs.ep instanceof GString // Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+	if (inputs.commandId instanceof Integer) inputs.commandId = zigbee.convertToHexString(inputs.commandId,2)
+	assert inputs.commandId instanceof String || inputs.commandId instanceof GString
+	assert inputs.commandId.length() == 2
+	assert inputs.commandData instanceof Map
 
-    if (logEnable) log.debug "For Cluster ${inputs.clusterId}, command ${ inputs.commandNum}: Storing ${inputs.commandData}"
-	return getClusterDataRecord(*:inputs)
-			.get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
-				.put(inputs.commandNum, inputs.commandData)
+    if (logEnable) log.debug "For Cluster ${inputs.clusterId}, command ${ inputs.commandId}: Storing ${inputs.commandData}"
+	ConcurrentHashMap rValue = getClusterDataRecord(*:inputs)
+								.get("lastSentCommand", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
+									.put(inputs.commandId, inputs.commandData)
+    // state.deviceStaticData = getDataRecordByNetworkId(isDynamicData: false )
+	state.deviceDynamicData  = getDataRecordByNetworkId(isDynamicData: true )										
+	return rValue
 }
 
-Object getClusterAttributeValue(Map params = [:] ){
+ConcurrentHashMap getClusterAttributeValue(Map params = [:] ){
 	Map inputs = [clusterId: null , attributeInt: null , ep: null , isDynamicData: true ] << params
 
-	try {
-		assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString // Not strictly needed. Also gets checked elsewhere.
-		assert inputs.attributeId instanceof String || inputs.attributeId instanceof GString
-		assert inputs.ep instanceof String  || inputs.ep instanceof GString  // Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+	assert inputs.attributeId instanceof String || inputs.attributeId instanceof GString
+	assert inputs.attributeId.length() == 4
 	
 	return getClusterDataRecord(*:inputs)
 			.get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
 				.get(inputs.attributeId)
 }
 
-Object setClusterAttributeValue(Map params = [:]){
+ConcurrentHashMap setClusterAttributeValue(Map params = [:]){
 	Map inputs = [clusterId: null , attributeId: null , attributeData: null , ep: null , isDynamicData: true ] << params
+
+	assert inputs.clusterId instanceof String || inputs.clusterId instanceof GString
+	assert inputs.clusterId.length() == 4 
+	assert inputs.ep instanceof String || inputs.ep instanceof GString
+	assert inputs.ep.length() == 2
+	assert inputs.attributeId instanceof String || inputs.attributeId instanceof GString
+	assert inputs.attributeId.length() == 4 
+
+	assert inputs.attributeData instanceof String || inputs.attributeData instanceof GString
+
 	
-	try { 
-		assert inputs.clusterId instanceof String  || inputs.clusterId instanceof GString// Not strictly needed. Also gets checked elsewhere.
-		assert inputs.attributeId instanceof String || inputs.attributeId instanceof GString
-		assert inputs.attributeData instanceof String || inputs.attributeData instanceof GString
-		assert inputs.ep instanceof String || inputs.ep instanceof GString// Not strictly needed. Also gets checked elsewhere.
-	} catch(AssertionError e) {
-        log.error "Wrong parameter values ${params} passed to function. <pre>${e}"
-		throw(e)
-	}	
-	return getClusterDataRecord(*:inputs)
-			.get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
-				.put(inputs.attributeId, inputs.attributeData)
+	ConcurrentHashMap rValue = getClusterDataRecord(*:inputs)
+								.get("clusterAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1))
+									.put(inputs.attributeId, inputs.attributeData)
+									
+    // state.deviceStaticData = getDataRecordByNetworkId(isDynamicData: false )
+	state.deviceDynamicData  = getDataRecordByNetworkId(isDynamicData: true )									
+	return rValue
 }
-/*
-Object getHubitatAttributeValue(String attribute, Integer ep){
-    log.debug "getting attribute value for ${attribute}, endpoint ${ep}"
-	return getDataRecordForEndpoint(ep:ep).get("hubitatAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).get(attribute)
-}
-Object setHubitatAttributeValue(String attribute, Object attributeData, Integer ep){
-	return getDataRecordForEndpoint(ep:ep).get("hubitatAttributes", new ConcurrentHashMap<String,ConcurrentHashMap>(4, 0.75, 1)).put(attribute, attributeData)
-}
-*/
 
 // Debugging Functions
-void showGlobalDataRecordByProductType() {
-	// Debugging function - shows the entire concurrent @Field 'global' data record for all devices using a particular driver
-	log.info "Data record in global storage is ${dataRecordByProductType.inspect()}."
-}
 
 void showFullGlobalDataRecord() {
 	// Debugging function - shows the entire concurrent @Field 'global' data record for all devices using a particular driver
 	log.info "Global Static Data Record Is ${getDataRecordByNetworkId(isDynamicData: false ).inspect()}."
 	log.info "Global Dynamic Data Record Is ${getDataRecordByNetworkId(isDynamicData: true ).inspect()}."
-
 }

@@ -1,3 +1,5 @@
+// Routines to handle color clusters. 
+
 library (
         base: "driver",
         author: "jvm33",
@@ -6,20 +8,19 @@ library (
         name: "ColorCluster0x0300",
         namespace: "zigbeeTools",
         documentationLink: "https://github.com/jvmahon/Hubitat-Zigbee",
-		version: "0.0.1"
+		version: "0.5.0"
 )
 
-void componentSetColor(com.hubitat.app.DeviceWrapper cd, Map colormap) {
-    setColor(colormap, getEndpointId(cd))
-}
+void componentSetColor(com.hubitat.app.DeviceWrapper cd, Map colormap) { setColor(colormap, getEndpointId(cd)) }
 
-void setColor(Map colormap, String ep = device.endpointId){
+void setColor(Map colormap, String ep = getEndpointId(device) ){
+	assert ! colormap.is(null)
 
     Integer targetHue = Math.max(Math.min(colormap.hue as Integer, 100), 0)
  	Integer targetSat = Math.max(Math.min(colormap.saturation as Integer, 100), 0)
     
-    String hexHue = zigbee.convertToHexString(Math.round(targetHue * 254 / 100) as Integer,2)
- 	String hexSat = zigbee.convertToHexString(Math.round(targetSat * 254 / 100) as Integer,2)
+    String hexHue = zigbee.convertToHexString(Math.round(targetHue * 2.54) as Integer,2)
+ 	String hexSat = zigbee.convertToHexString(Math.round(targetSat * 2.54) as Integer,2)
     
     setLevel(level:(colormap.level), duration: 0, ep:ep) 
 	
@@ -28,51 +29,62 @@ void setColor(Map colormap, String ep = device.endpointId){
 		clusterId: 0x0300, 
 		isClusterSpecific: true ,
 		commandId: 0x06, /// Move to Hue and Saturation, ZCL 5.2.2.3.10
-		commandPayload: byteReverseParameters([hexHue, hexSat, "0000", "00", "00"]) // ZCL Fig. 5-8
+		commandPayload: [hexHue, hexSat, "0000", "00", "00"] // ZCL Fig. 5-8
 		)
 		
-    setLastSentCommand(clusterId:"0300", commandNum:0x06, commandData:[hue:targetHue, hexHue: hexHue, saturation:targetSat, hexSat: hexSat, level:(colormap.level as Integer), command:0x06], ep:ep)
+    setLastSentCommand(clusterId:"0300", commandId:0x06, commandData:[hue:targetHue, hexHue: hexHue, saturation:targetSat, hexSat: hexSat, level:(colormap.level as Integer), command:0x06], ep:ep)
 }
 
-void componentSetHue(com.hubitat.app.DeviceWrapper cd, hue) {
-    setHue(hue, getEndpointId(cd))
-}
-void setHue(hue, String ep = device.endpointId){
-	Integer targetHue = Math.max(Math.min(hue as Integer, 100), 0)
-	String hexHue = zigbee.convertToHexString(Math.round(targetHue * 254 / 100) as Integer,2)
+void componentSetHue(com.hubitat.app.DeviceWrapper cd, hue) { setHue(hue:hue, ep:getEndpointId(cd)) }
+void setHue(hue){ setHue(hue:hue as Integer) }
+void setHue(Map params = [:]){
+	Map inputs = [hue: null , ep:getEndpointId(device) ] << params
+	assert inputs.hue instanceof Integer
+	
+	Integer targetHue = Math.max(Math.min(inputs.hue as Integer, 100), 0)
+	String hexHue = zigbee.convertToHexString(Math.round(targetHue * 2.54) as Integer,2)
     
 	sendZCLAdvanced(
-		destinationEndpoint: ep ,
+		destinationEndpoint: inputs.ep ,
 		clusterId: 0x0300, 
 		isClusterSpecific: true ,
 		commandId: 0x00, /// Move to Hue, ZCL 5.2.2.3.4
-		commandPayload: byteReverseParameters([hexHue, "00", "0000", "00", "00"]) // ZCL Fig. 5-2
+		commandPayload: [hexHue, "00", "0000", "00", "00"] // ZCL Fig. 5-2
 		)
 			
-    setLastSentCommand(clusterId:"0300", commandNum:0x00, commandData:[hue:targetHue, hexHue: hexHue, command:0x00], ep:ep)
+    setLastSentCommand(clusterId:"0300", commandId:0x00, commandData:[hue:targetHue, hexHue: hexHue, command:0x00], ep:inputs.ep)
 }
 
 void componentSetSaturation(com.hubitat.app.DeviceWrapper cd, saturation) {
-    setSaturation(saturation, getEndpointId(cd))
+    setSaturation(saturation:saturation, ep:getEndpointId(cd))
 }
-void setSaturation(saturation, String ep = device.endpointId){
-	Integer targetSat = Math.max(Math.min(saturation as Integer, 100), 0)
+void setSaturation(saturation){ setSaturation (saturation:saturation as Integer) }
+void setSaturation(Map params = [:]){
+	Map inputs = [saturation: null , ep:getEndpointId(device)] << params
+
+    try{
+		assert inputs.saturation instanceof Integer
+    } catch (AssertionError e) {
+        log.debug "<pre>${e}"
+        throw e
+    }
+	
+	Integer targetSat = Math.max(Math.min(inputs.saturation as Integer, 100), 0)
 	String hexSat = zigbee.convertToHexString(Math.round(targetSat * 2.54) as Integer,2)
     
 	sendZCLAdvanced(
-		destinationEndpoint: ep ,
+		destinationEndpoint: inputs.ep ,
 		clusterId: 0x0300, 
 		isClusterSpecific: true ,
 		commandId: 0x03, /// Move to Saturation, ZCL 5.2.2.3.7
-		commandPayload: byteReverseParameters([hexSat, "0000", "00", "00"]) // ZCL Fig. 5-5
+		commandPayload: [hexSat, "0000", "00", "00"] // ZCL Fig. 5-5
 		)
 			
-    setLastSentCommand(clusterId:"0300", commandNum:0x03, commandData:[saturation:targetSat, hexSat: hexSat, command:0x03], ep:ep)
+    setLastSentCommand(clusterId:"0300", commandId:0x03, commandData:[saturation:targetSat, hexSat: hexSat, command:0x03], ep:inputs.ep)
 }
 
 void processAttributes0x0300(Map descMap){
-        assert ! (descMap.sourceEndpoint.is( null ) && descMap.endpoint.is (null)  )
-        String ep = descMap.sourceEndpoint ?: descMap.endpoint
+    String ep = descMap.sourceEndpoint ?: descMap.endpoint
 
     List<Map> hubEvents = []
     
@@ -131,7 +143,7 @@ void processSpecificResponse0x0104_0300(Map descMap) {
 }
 
 void processGlobalResponse0x0104_0300(Map descMap) {
-        assert ! (descMap.sourceEndpoint.is( null )   && descMap.endpoint.is (null)  )
+        assert ! (descMap.sourceEndpoint.is( null ) && descMap.endpoint.is (null)  )
         String ep = descMap.sourceEndpoint ?: descMap.endpoint
     
     	switch(descMap.command) {
@@ -142,7 +154,7 @@ void processGlobalResponse0x0104_0300(Map descMap) {
 			
 		case "0B": // Default Response
             List<Map> hubEvents = []
-			Map whatWasSent = removeLastSentCommand(clusterId:"0300", commandNum:(Integer.parseInt(descMap.data[0], 16)), ep:ep )
+			Map whatWasSent = removeLastSentCommand(clusterId:"0300", commandId:descMap.data[0], ep:ep )
            
             if (logEnable) log.debug "Last Sent Color Command for command 0x${ (descMap.data[0])} endpoint ${ep} was: ${whatWasSent}"
       
@@ -170,33 +182,33 @@ void processClusterResponse0x0104_0300(Map descMap){
     }
 }
 
-void configure0x0104_0300(String ep = device.endpointId) {
+void configure0x0104_0300(String ep = getEndpointId(device) ) {
 	// if (logEnable) log.debug "Configuring 0x0300 attribute reporting: ${cmds}"
 	String cmd = "zdo bind 0x${device.deviceNetworkId} 0x${ep} 0x01 0x0300 {${device.zigbeeId}} {}" 
 	sendHubCommand(new hubitat.device.HubAction( cmd, hubitat.device.Protocol.ZIGBEE))
 }
-void unbind0x0104_0300(String ep = device.endpointId) {
+void unbind0x0104_0300(String ep = getEndpointId(device) ) {
 	String cmd = "zdo unbind 0x${device.deviceNetworkId} 0x${ep} 0x01 0x0300 {${device.zigbeeId}} {}" 
 	if (logEnable) log.debug "Unbinding 0x0300: ${cmd}"
 	sendHubCommand(new hubitat.device.HubAction( cmd, hubitat.device.Protocol.ZIGBEE))     
 }
 void initialize0x0104_0300() {
-	configure0x0104_0300()
+	// configure0x0104_0300()
 	refresh0x0104_0300()
 }
-void refresh0x0104_0300(String ep = device.endpointId) {
+void refresh0x0104_0300(String ep = getEndpointId(device) ) {
  
        sendZCLAdvanced(
-            clusterId: 0x0300 ,             // specified as an Integer
+            clusterId: 0x0300 , 
             destinationEndpoint: ep, 
             commandId: 0x00,             // 00 = Read attributes, ZCL Table 2-3.
-			commandPayload: byteReverseParameters(["400A"]) // List of attributes of interest [0x400A] in reversed octet form
+			commandPayload: ["400A"] // List of attributes of interest [0x400A].
         )   
       sendZCLAdvanced(
-            clusterId: 0x0300 ,             // specified as an Integer
+            clusterId: 0x0300 ,
             destinationEndpoint: ep, 
             commandId: 0x00,             // 00 = Read attributes, ZCL Table 2-3.
-			commandPayload: byteReverseParameters(["0000", "0001", "0007", "0008"]) // List of attributes of interest [0x0000, 0x0001, 0x0007, 0x0008] in reversed octet form
+			commandPayload: ["0000", "0001", "0007", "0008"] // List of attributes of interest.
         )
     
 }
